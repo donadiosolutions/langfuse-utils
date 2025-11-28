@@ -1,0 +1,15 @@
+{
+  "plugins": [],
+  "config": {
+    "set": {
+      "md004": "consistent",
+      "md013": false,
+      "md024": "no-duplicate-heading",
+      "md025": "single",
+      "md029": "ordered",
+      "md033": false,
+      "md041": true,
+      "md046": "fenced"
+    }
+  }
+}

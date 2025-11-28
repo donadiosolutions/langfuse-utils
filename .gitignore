@@ -1,0 +1,45 @@
+# Bytecode and cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Environments
+.venv/
+.uv/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Tools
+.ruff_cache/
+
+# IDE/editor
+.idea/
+.vscode/
+
+# System
+.DS_Store
+
+# Trace files
+trace-*.json
+**/trace-*.json
+
+# Environment variables
+secrets.env
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+log/
+
+# VSCode settings
+.vscode/*
+*.code-workspace
