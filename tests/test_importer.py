@@ -19,6 +19,11 @@ from langfuse_utils import cli as root_cli
 
 META_EMPTY = {"page": 1, "limit": 1, "totalItems": 0, "totalPages": 1}
 META_ONE = {"page": 1, "limit": 1, "totalItems": 1, "totalPages": 1}
+CHAT_INPUT = [
+    {"role": "system", "content": "Summarize the conversation."},
+    {"role": "user", "content": {"question": "What is the status?"}},
+]
+CHAT_OUTPUT = {"role": "assistant", "content": {"answer": "All good"}}
 
 
 def _make_client(responder: httpx.MockTransport) -> LangfuseHttpClient:
@@ -41,7 +46,12 @@ def test_importer_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
         if request.url.path == "/api/public/traces":
             payload = {
                 "data": [
-                    {"id": "t1", "input": "{}", "output": "ok", "environment": "production"},
+                    {
+                        "id": "t1",
+                        "input": CHAT_INPUT,
+                        "output": CHAT_OUTPUT,
+                        "environment": "production",
+                    },
                 ],
                 "meta": {"page": 1, "limit": 100, "totalPages": 1, "totalItems": 1},
             }
@@ -68,6 +78,13 @@ def test_importer_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert stats.failed == 0
     assert created_items[0]["sourceTraceId"] == "t1"
     assert created_items[0]["datasetName"] == "demo"
+    assert created_items[0]["input"] == {"user_content": CHAT_INPUT[1]["content"]}
+    assert created_items[0]["expectedOutput"] == CHAT_OUTPUT["content"]
+    assert created_items[0]["metadata"] == {
+        "traceId": "t1",
+        "environment": "production",
+        "prompt": CHAT_INPUT[0]["content"],
+    }
 
 
 def test_dry_run_never_writes() -> None:
@@ -78,7 +95,7 @@ def test_dry_run_never_writes() -> None:
             return httpx.Response(200, json={"name": "demo"})
         if request.url.path == "/api/public/traces":
             payload = {
-                "data": [{"id": "t1", "input": "{}", "output": "ok"}],
+                "data": [{"id": "t1", "input": CHAT_INPUT, "output": CHAT_OUTPUT}],
                 "meta": {"page": 1, "limit": 100, "totalPages": 1, "totalItems": 1},
             }
             return httpx.Response(200, json=payload)
@@ -103,7 +120,7 @@ def test_dry_run_missing_dataset_succeeds() -> None:
             return httpx.Response(404)
         if request.url.path == "/api/public/traces":
             payload = {
-                "data": [{"id": "t1", "input": "{}", "output": "ok"}],
+                "data": [{"id": "t1", "input": CHAT_INPUT, "output": CHAT_OUTPUT}],
                 "meta": {"page": 1, "limit": 100, "totalPages": 1, "totalItems": 1},
             }
             return httpx.Response(200, json=payload)
@@ -121,6 +138,8 @@ def test_dry_run_missing_dataset_succeeds() -> None:
 
 def test_model_filter_fetches_details_and_decodes_payload() -> None:
     posted: dict | None = None
+    encoded_input = json.dumps(json.dumps(CHAT_INPUT))
+    encoded_output = json.dumps(json.dumps(CHAT_OUTPUT))
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal posted
@@ -128,15 +147,15 @@ def test_model_filter_fetches_details_and_decodes_payload() -> None:
             return httpx.Response(200, json={"name": "demo"})
         if request.url.path == "/api/public/traces":
             payload = {
-                "data": [{"id": "t1", "input": '"{\\"foo\\": 1}"', "output": '"{\\"bar\\":2}"'}],
+                "data": [{"id": "t1", "input": encoded_input, "output": encoded_output}],
                 "meta": {"page": 1, "limit": 100, "totalPages": 1, "totalItems": 1},
             }
             return httpx.Response(200, json=payload)
         if request.url.path == "/api/public/traces/t1":
             detail = {
                 "id": "t1",
-                "input": '"{\\"foo\\": 1}"',
-                "output": '"{\\"bar\\":2}"',
+                "input": encoded_input,
+                "output": encoded_output,
                 "observations": [{"model": "gpt-m1"}],
             }
             return httpx.Response(200, json=detail)
@@ -157,9 +176,10 @@ def test_model_filter_fetches_details_and_decodes_payload() -> None:
     stats = importer.run()
 
     assert stats.imported == 1
-    assert isinstance(posted["input"], dict)
-    assert posted["input"] == {"foo": 1}
-    assert posted["expectedOutput"] == {"bar": 2}
+    assert posted["input"] == {"user_content": CHAT_INPUT[1]["content"]}
+    assert posted["expectedOutput"] == CHAT_OUTPUT["content"]
+    assert posted["metadata"]["prompt"] == CHAT_INPUT[0]["content"]
+    assert posted["metadata"]["model"] == "gpt-m1"
 
 
 def test_skips_when_trace_already_imported() -> None:
@@ -168,7 +188,7 @@ def test_skips_when_trace_already_imported() -> None:
             return httpx.Response(200, json={"name": "demo"})
         if request.url.path == "/api/public/traces":
             payload = {
-                "data": [{"id": "t1", "input": "{}", "output": "ok"}],
+                "data": [{"id": "t1", "input": CHAT_INPUT, "output": CHAT_OUTPUT}],
                 "meta": {"page": 1, "limit": 100, "totalPages": 1, "totalItems": 1},
             }
             return httpx.Response(200, json=payload)
@@ -195,9 +215,18 @@ def test_retry_on_transient_error(monkeypatch: pytest.MonkeyPatch) -> None:
             return httpx.Response(200, json={"name": "demo"})
         if request.url.path == "/api/public/traces":
             page = request.url.params.get("page", "1")
-            input_value = {} if page == "1" else {"prompt": 1}
+            input_value = [
+                {"role": "system", "content": f"prompt-{page}"},
+                {"role": "user", "content": {"page": int(page)}},
+            ]
             payload = {
-                "data": [{"id": f"t{page}", "input": input_value, "output": "ok"}],
+                "data": [
+                    {
+                        "id": f"t{page}",
+                        "input": input_value,
+                        "output": {"content": {"status": "ok", "page": int(page)}},
+                    },
+                ],
                 "meta": {"page": int(page), "limit": 1, "totalPages": 2, "totalItems": 2},
             }
             return httpx.Response(200, json=payload)
@@ -231,7 +260,7 @@ def test_non_retriable_error_is_counted(monkeypatch: pytest.MonkeyPatch) -> None
             return httpx.Response(200, json={"name": "demo"})
         if request.url.path == "/api/public/traces":
             payload = {
-                "data": [{"id": "t1", "input": "{}", "output": "ok"}],
+                "data": [{"id": "t1", "input": CHAT_INPUT, "output": CHAT_OUTPUT}],
                 "meta": {"page": 1, "limit": 100, "totalPages": 1, "totalItems": 1},
             }
             return httpx.Response(200, json=payload)
@@ -296,38 +325,28 @@ def test_environment_parameter_and_missing_id(monkeypatch: pytest.MonkeyPatch) -
     assert stats.skipped == 0
 
 
-def test_invalid_json_payload_falls_back() -> None:
-    posted: dict | None = None
+def test_build_dataset_item_strips_empty_metadata() -> None:
+    importer = TraceImporter(
+        _make_client(httpx.MockTransport(lambda request: httpx.Response(404))),
+        "demo",
+        TraceFilter(range_days=1),
+    )
+    trace = {
+        "id": "t1",
+        "input": CHAT_INPUT,
+        "output": {"content": {"answer": "ok"}},
+        "name": "",
+        "environment": None,
+        "timestamp": None,
+        "latency": None,
+        "observations": [],
+    }
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal posted
-        if request.url.path == "/api/public/v2/datasets/demo":
-            return httpx.Response(200, json={"name": "demo"})
-        if request.url.path == "/api/public/traces":
-            payload = {
-                "data": [{"id": "t1", "input": "{invalid", "output": "{also"}],
-                "meta": {"page": 1, "limit": 1, "totalPages": 1, "totalItems": 1},
-            }
-            return httpx.Response(200, json=payload)
-        if request.url.path == "/api/public/dataset-items" and request.method == "GET":
-            return httpx.Response(
-                200,
-                json={"data": [], "meta": META_EMPTY},
-            )
-        if request.url.path == "/api/public/dataset-items" and request.method == "POST":
-            posted = json.loads(request.content)
-            return httpx.Response(200, json={"id": posted["id"]})
-        if request.url.path.startswith("/api/public/dataset-items/"):
-            return httpx.Response(200, json={"id": request.url.path.split("/")[-1]})
-        raise AssertionError(f"Unhandled {request.url}")
+    payload = importer._build_dataset_item(trace)
 
-    client = _make_client(httpx.MockTransport(handler))
-    importer = TraceImporter(client, "demo", TraceFilter(range_days=1))
-    stats = importer.run()
-    assert stats.imported == 1
-    assert posted["input"] == "{invalid"
-    assert posted["expectedOutput"] == "{also"
-    assert stats.failed == 0
+    assert payload["metadata"] == {"traceId": "t1", "prompt": CHAT_INPUT[0]["content"]}
+    assert payload["input"] == {"user_content": CHAT_INPUT[1]["content"]}
+    assert payload["expectedOutput"] == {"answer": "ok"}
 
 
 def test_model_filter_mismatch_skips() -> None:
@@ -336,7 +355,7 @@ def test_model_filter_mismatch_skips() -> None:
             return httpx.Response(200, json={"name": "demo"})
         if request.url.path == "/api/public/traces":
             payload = {
-                "data": [{"id": "t1", "input": "{}", "output": "ok"}],
+                "data": [{"id": "t1", "input": CHAT_INPUT, "output": CHAT_OUTPUT}],
                 "meta": {"page": 1, "limit": 1, "totalPages": 1, "totalItems": 1},
             }
             return httpx.Response(200, json=payload)
@@ -608,7 +627,7 @@ def test_verification_failure_counts_failed(monkeypatch: pytest.MonkeyPatch) -> 
             return httpx.Response(200, json={"name": "demo"})
         if request.url.path == "/api/public/traces":
             payload = {
-                "data": [{"id": "t1", "input": "{}", "output": "ok"}],
+                "data": [{"id": "t1", "input": CHAT_INPUT, "output": CHAT_OUTPUT}],
                 "meta": {"page": 1, "limit": 1, "totalPages": 1, "totalItems": 1},
             }
             return httpx.Response(200, json=payload)
@@ -764,6 +783,11 @@ def test_decode_if_json_encoded_scalar() -> None:
 def test_decode_if_json_exhausts_loop_without_break() -> None:
     encoded = '"\\"inner\\""'
     assert _decode_if_json(encoded) == encoded
+
+
+def test_decode_if_json_handles_decode_error() -> None:
+    invalid = '{"foo":'  # looks like JSON but is malformed
+    assert _decode_if_json(invalid) == invalid
 
 
 def test_first_model_handles_missing_model() -> None:

@@ -199,8 +199,9 @@ class TraceImporter:
     def _build_dataset_item(self, trace: dict[str, Any]) -> dict[str, Any]:
         trace_id = str(trace.get("id"))
         item_id = _dataset_item_id(self.dataset_name, trace_id)
-        input_payload = _decode_if_json(trace.get("input"))
-        expected_output = _decode_if_json(trace.get("output"))
+        prompt_content = _decode_if_json(trace.get("input"))[0].get("content")
+        user_content = _decode_if_json(trace.get("input"))[1].get("content")
+        expected_output = _decode_if_json(trace.get("output")).get("content")
 
         metadata = {
             "traceId": trace_id,
@@ -209,13 +210,14 @@ class TraceImporter:
             "timestamp": trace.get("timestamp"),
             "latency": trace.get("latency"),
             "model": _first_model(trace),
+            "prompt": prompt_content,
         }
         # Remove empty entries to keep metadata concise.
         metadata = {k: v for k, v in metadata.items() if v not in (None, "", [])}
 
         return {
             "datasetName": self.dataset_name,
-            "input": input_payload,
+            "input": {"user_content": user_content},
             "expectedOutput": expected_output,
             "metadata": metadata or None,
             "sourceTraceId": trace_id,
